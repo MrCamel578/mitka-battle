@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: mitka-battle
+    name: mitka-battle-api
     runtime: node
     plan: free
     buildCommand: npm install
@@ -12,4 +12,8 @@ services:
       - key: SESSION_SECRET
         generateValue: true
       - key: DATABASE_URL
+        sync: false
+      - key: ADMIN_USERNAME
+        value: Idi0t578
+      - key: ADMIN_PASSWORD
         sync: false

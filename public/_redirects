@@ -1,0 +1,2 @@
+# Replace the hostname with your deployed Render Web Service URL before deploying.
+/api/*  https://YOUR-RENDER-SERVICE.onrender.com/api/:splat  200
