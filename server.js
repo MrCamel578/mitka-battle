@@ -60,7 +60,7 @@ async function initDb() {
 }
 function sanitizeProfile(p) {
   const bal = Number(p?.bal), best = Number(p?.best), opened = Number(p?.opened), bonus = Number(p?.bonus);
-  const inv = Array.isArray(p?.inv) ? p.inv.slice(0, 5000).filter(x => x && typeof x.n === 'string' && x.n.length <= 180 && Number.isFinite(Number(x.p)) && Number(x.p) >= 0 && ['c','b','p','k','g','y'].includes(x.r)).map(x => ({ n: x.n.replace(/[<>]/g, '').slice(0, 180), p: Math.min(1e12, Number(x.p)), r: x.r })) : [];
+  const inv = Array.isArray(p?.inv) ? p.inv.slice(0, 5000).filter(x => x && typeof x.n === 'string' && x.n.length <= 180 && Number.isFinite(Number(x.p)) && Number(x.p) >= 0 && ['c','b','p','k','g','y'].includes(x.r)).map(x => ({ n: x.n.replace(/[<>]/g, '').slice(0, 180), p: Math.min(1e12, Number(x.p)), r: x.r, locked: Boolean(x.locked) })) : [];
   const fav = Array.isArray(p?.fav) ? [...new Set(p.fav.filter(x => Number.isInteger(x) || (typeof x === 'string' && x.length < 80)))].slice(0, 1000) : [];
   return {
     name: typeof p?.name === 'string' ? p.name.slice(0, 16) : 'Игрок',
@@ -194,12 +194,12 @@ app.post('/api/open-case', requireAuth, async (req,res) => {
 app.post('/api/upgrade', requireAuth, async (req,res) => {
   const indices=Array.isArray(req.body?.indices)?req.body.indices:[],targetIndex=Number(req.body?.targetIndex);
   if(indices.length<1||indices.length>500||indices.some(i=>!Number.isInteger(i)||i<0)||new Set(indices).size!==indices.length||!Number.isInteger(targetIndex)||!CATALOG.SK[targetIndex])return res.status(400).json({error:'Некорректные предметы или цель'});
-  const cx=await pool.connect();try{await cx.query('BEGIN');const {row,profile}=await loadLockedUser(cx,req.session.userId);if(indices.some(i=>i>=profile.inv.length))throw Object.assign(new Error('Инвентарь изменился. Обновите страницу'),{status:409});const stake=indices.reduce((sum,i)=>sum+profile.inv[i].p,0);const target=CATALOG.SK[targetIndex];const targetItem={n:target[0],p:Number(target[1]),r:target[2]};if(targetItem.p<=stake)throw Object.assign(new Error('Цель должна быть дороже выбранных предметов'),{status:400});const chance=Math.min(90,stake/targetItem.p*95);const win=Math.random()*100<chance;for(const i of [...indices].sort((a,b)=>b-a))profile.inv.splice(i,1);if(win){profile.inv.push(targetItem);profile.best=Math.max(profile.best,targetItem.p);}const user=await persistProfile(cx,row,profile);await cx.query('COMMIT');res.json({ok:true,user,win,item:win?targetItem:null,chance});}catch(e){await cx.query('ROLLBACK');res.status(e.status||500).json({error:e.message||'Не удалось выполнить апгрейд'});}finally{cx.release();}
+  const cx=await pool.connect();try{await cx.query('BEGIN');const {row,profile}=await loadLockedUser(cx,req.session.userId);if(indices.some(i=>i>=profile.inv.length))throw Object.assign(new Error('Инвентарь изменился. Обновите страницу'),{status:409});if(indices.some(i=>profile.inv[i].locked))throw Object.assign(new Error('Заблокированные скины нельзя использовать в апгрейде'),{status:400});const stake=indices.reduce((sum,i)=>sum+profile.inv[i].p,0);const target=CATALOG.SK[targetIndex];const targetItem={n:target[0],p:Number(target[1]),r:target[2]};if(targetItem.p<=stake)throw Object.assign(new Error('Цель должна быть дороже выбранных предметов'),{status:400});const chance=Math.min(90,stake/targetItem.p*95);const win=Math.random()*100<chance;for(const i of [...indices].sort((a,b)=>b-a))profile.inv.splice(i,1);if(win){profile.inv.push(targetItem);profile.best=Math.max(profile.best,targetItem.p);}const user=await persistProfile(cx,row,profile);await cx.query('COMMIT');res.json({ok:true,user,win,item:win?targetItem:null,chance});}catch(e){await cx.query('ROLLBACK');res.status(e.status||500).json({error:e.message||'Не удалось выполнить апгрейд'});}finally{cx.release();}
 });
 app.post('/api/sell', requireAuth, async (req,res) => {
   const all=req.body?.all===true,indices=Array.isArray(req.body?.indices)?req.body.indices:[];
   if(!all&&(!indices.length||indices.some(i=>!Number.isInteger(i)||i<0)||new Set(indices).size!==indices.length))return res.status(400).json({error:'Выберите предметы для продажи'});
-  const cx=await pool.connect();try{await cx.query('BEGIN');const {row,profile}=await loadLockedUser(cx,req.session.userId);const chosen=all?profile.inv.map((_,i)=>i):indices;if(chosen.some(i=>i>=profile.inv.length))throw Object.assign(new Error('Инвентарь изменился. Обновите страницу'),{status:409});let amount=0;for(const i of chosen)amount+=profile.inv[i].p;for(const i of [...chosen].sort((a,b)=>b-a))profile.inv.splice(i,1);profile.bal+=amount;const user=await persistProfile(cx,row,profile);await cx.query('COMMIT');res.json({ok:true,user,amount});}catch(e){await cx.query('ROLLBACK');res.status(e.status||500).json({error:e.message||'Не удалось продать предметы'});}finally{cx.release();}
+  const cx=await pool.connect();try{await cx.query('BEGIN');const {row,profile}=await loadLockedUser(cx,req.session.userId);const chosen=all?profile.inv.map((item,i)=>item.locked?-1:i).filter(i=>i>=0):indices;if(chosen.some(i=>i>=profile.inv.length))throw Object.assign(new Error('Инвентарь изменился. Обновите страницу'),{status:409});if(chosen.some(i=>profile.inv[i].locked))throw Object.assign(new Error('Сначала разблокируйте выбранные скины'),{status:400});let amount=0;for(const i of chosen)amount+=profile.inv[i].p;for(const i of [...chosen].sort((a,b)=>b-a))profile.inv.splice(i,1);profile.bal+=amount;const user=await persistProfile(cx,row,profile);await cx.query('COMMIT');res.json({ok:true,user,amount});}catch(e){await cx.query('ROLLBACK');res.status(e.status||500).json({error:e.message||'Не удалось продать предметы'});}finally{cx.release();}
 });
 app.post('/api/bonus', requireAuth, async (req,res) => {
   const cx=await pool.connect();try{await cx.query('BEGIN');const {row,profile}=await loadLockedUser(cx,req.session.userId);const now=Date.now();if(now-Number(profile.bonus||0)<86400000)throw Object.assign(new Error('Бонус уже получен. Приходи завтра.'),{status:400});profile.bonus=now;profile.bal+=100;const user=await persistProfile(cx,row,profile);await cx.query('COMMIT');res.json({ok:true,user,amount:100});}catch(e){await cx.query('ROLLBACK');res.status(e.status||500).json({error:e.message||'Не удалось забрать бонус'});}finally{cx.release();}
@@ -242,7 +242,43 @@ app.post('/api/admin/users/:id/ban', requireAuth, requireAdmin, async (req,res) 
 app.post('/api/contracts', requireAuth, async (req,res) => {
   const indices=Array.isArray(req.body?.indices)?req.body.indices:[];
   if(indices.length<3||indices.length>10||indices.some(i=>!Number.isInteger(i)||i<0)||new Set(indices).size!==indices.length)return res.status(400).json({error:'Выберите от 3 до 10 предметов'});
-  const cx=await pool.connect();try{await cx.query('BEGIN');const {row,profile}=await loadLockedUser(cx,req.session.userId);if(indices.some(i=>i>=profile.inv.length))throw Object.assign(new Error('Инвентарь изменился. Обновите страницу'),{status:409});const selected=indices.map(i=>profile.inv[i]);const total=selected.reduce((a,x)=>a+x.p,0);const candidates=CATALOG.SK.filter(x=>Number(x[1])>=Math.max(1,total*0.6)&&Number(x[1])<=Math.max(2,total*1.5));const poolItems=candidates.length?candidates:CATALOG.SK.slice().sort((a,b)=>Math.abs(Number(a[1])-total)-Math.abs(Number(b[1])-total)).slice(0,30);const target=poolItems[Math.floor(Math.random()*poolItems.length)];const item={n:target[0],p:Number(target[1]),r:target[2]};for(const i of [...indices].sort((a,b)=>b-a))profile.inv.splice(i,1);profile.inv.push(item);profile.best=Math.max(profile.best,item.p);const user=await persistProfile(cx,row,profile);await cx.query('COMMIT');res.json({ok:true,win:true,item,user});}catch(e){await cx.query('ROLLBACK');res.status(e.status||500).json({error:e.message||'Не удалось выполнить контракт'});}finally{cx.release();}
+  const cx=await pool.connect();
+  try {
+    await cx.query('BEGIN');
+    const {row,profile}=await loadLockedUser(cx,req.session.userId);
+    if(indices.some(i=>i>=profile.inv.length))throw Object.assign(new Error('Инвентарь изменился. Обновите страницу'),{status:409});
+    if(indices.some(i=>profile.inv[i].locked))throw Object.assign(new Error('Разблокируйте скины, которые хотите положить в контракт'),{status:400});
+    const selected=indices.map(i=>profile.inv[i]);
+    const total=selected.reduce((a,x)=>a+x.p,0);
+    // Контракт гарантированно возвращает один предмет. Основной диапазон наград — 0.85–2.2x стоимости входа;
+    // если в каталоге нет подходящих предметов, берём ближайшие по цене, чтобы результат не был пустым.
+    const min=Math.max(1,total*0.85), max=Math.max(2,total*2.2);
+    let candidates=CATALOG.SK.filter(x=>Number(x[1])>=min&&Number(x[1])<=max);
+    if(!candidates.length)candidates=CATALOG.SK.slice().sort((a,b)=>Math.abs(Number(a[1])-total)-Math.abs(Number(b[1])-total)).slice(0,Math.min(30,CATALOG.SK.length));
+    const weighted=candidates.map(x=>({x,w:({c:1.0,b:1.15,p:1.3,k:1.5,g:1.7,y:1.9}[x[2]]||1)}));
+    const weightTotal=weighted.reduce((a,x)=>a+x.w,0);let roll=Math.random()*weightTotal;let target=weighted[weighted.length-1].x;
+    for(const candidate of weighted){roll-=candidate.w;if(roll<=0){target=candidate.x;break;}}
+    const item={n:target[0],p:Number(target[1]),r:target[2],locked:false};
+    for(const i of [...indices].sort((a,b)=>b-a))profile.inv.splice(i,1);
+    profile.inv.push(item);profile.best=Math.max(profile.best,item.p);
+    const user=await persistProfile(cx,row,profile);await cx.query('COMMIT');
+    res.json({ok:true,win:true,item,user,inputValue:total,multiplier:item.p/Math.max(total,0.01)});
+  } catch(e) { await cx.query('ROLLBACK');res.status(e.status||500).json({error:e.message||'Не удалось выполнить контракт'}); }
+  finally { cx.release(); }
+});
+app.post('/api/lock-skin', requireAuth, async (req,res) => {
+  const index=Number(req.body?.index), locked=Boolean(req.body?.locked);
+  if(!Number.isInteger(index)||index<0)return res.status(400).json({error:'Некорректный индекс скина'});
+  const cx=await pool.connect();
+  try {
+    await cx.query('BEGIN');
+    const {row,profile}=await loadLockedUser(cx,req.session.userId);
+    if(index>=profile.inv.length)throw Object.assign(new Error('Инвентарь изменился. Обновите страницу'),{status:409});
+    profile.inv[index].locked=locked;
+    const user=await persistProfile(cx,row,profile);
+    await cx.query('COMMIT');res.json({ok:true,user,index,locked});
+  } catch(e) { await cx.query('ROLLBACK');res.status(e.status||500).json({error:e.message||'Не удалось изменить блокировку'}); }
+  finally { cx.release(); }
 });
 app.get('/api/leaderboard', async (_req, res) => {
   try {
