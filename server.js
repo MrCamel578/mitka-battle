@@ -8,7 +8,8 @@ const bcrypt = require('bcryptjs');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit').rateLimit;
 const CATALOG = require('./catalog.json');
-const TIER_WEIGHT = { c: 61, b: 25, p: 9.5, k: 3.5, g: 0.8, y: 0.2 };
+// Более щедрые веса редкости: common 50%, blue 27%, purple 13%, pink 6%, red 3%, gold 1% суммарно по редкости в каждом кейсе.
+const TIER_WEIGHT = { c: 50, b: 27, p: 13, k: 6, g: 3, y: 1 };
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -48,13 +49,20 @@ async function initDb() {
     id BIGSERIAL PRIMARY KEY, admin_id BIGINT REFERENCES app_users(id), admin_name TEXT NOT NULL,
     action TEXT NOT NULL, target TEXT, details JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`);
-  if (process.env.ADMIN_USERNAME && process.env.ADMIN_PASSWORD) {
+  // Promote the configured existing account without changing its password.
+  // If it does not exist yet, create one only when both credentials are explicitly configured.
+  if (process.env.ADMIN_USERNAME) {
     const username = process.env.ADMIN_USERNAME.trim();
     const key = username.toLocaleLowerCase('ru');
-    const hash = await bcrypt.hash(process.env.ADMIN_PASSWORD, 12);
-    await pool.query(`INSERT INTO app_users (username_key, username, password_hash, profile_json, role)
-      VALUES ($1,$2,$3,$4::jsonb,'admin') ON CONFLICT (username_key) DO UPDATE SET role='admin', password_hash=EXCLUDED.password_hash, username=EXCLUDED.username`,
-      [key, username, hash, JSON.stringify(sanitizeProfile({name: username, bal: 0, inv: [], opened: 0, best: 0, bonus: 0, fav: []}))]);
+    const existing = await pool.query("UPDATE app_users SET role='admin' WHERE username_key=$1 RETURNING id", [key]);
+    if (!existing.rowCount && process.env.ADMIN_PASSWORD) {
+      const hash = await bcrypt.hash(process.env.ADMIN_PASSWORD, 12);
+      await pool.query(`INSERT INTO app_users (username_key, username, password_hash, profile_json, role)
+        VALUES ($1,$2,$3,$4::jsonb,'admin') ON CONFLICT (username_key) DO UPDATE SET role='admin'`,
+        [key, username, hash, JSON.stringify(sanitizeProfile({name: username, bal: 0, inv: [], opened: 0, best: 0, bonus: 0, fav: []}))]);
+    } else if (!existing.rowCount) {
+      console.warn('ADMIN_USERNAME не найден в базе. Для создания нового администратора нужны ADMIN_USERNAME и ADMIN_PASSWORD; существующие пароли не изменяются.');
+    }
   }
   console.log('PostgreSQL tables ready');
 }
