@@ -295,6 +295,24 @@
     });
   }
 
+  function scheduleSell(ctx, time, volume, pitch, pan) {
+    tone(ctx, time, 720 * pitch, 0.070, 0.032 * volume, { wave: 'sine', toFrequency: 880 * pitch, attack: 0.004, pan });
+    tone(ctx, time + 0.055, 990 * pitch, 0.130, 0.038 * volume, { wave: 'triangle', toFrequency: 1220 * pitch, attack: 0.005, pan });
+    noise(ctx, time + 0.030, 0.060, 0.007 * volume, { pan, filter: { type: 'highpass', frequency: 2600, q: 0.8 } });
+  }
+
+  function scheduleProfile(ctx, time, volume, pitch, pan) {
+    tone(ctx, time, 392 * pitch, 0.100, 0.026 * volume, { wave: 'sine', attack: 0.006, pan });
+    tone(ctx, time + 0.070, 523 * pitch, 0.120, 0.032 * volume, { wave: 'sine', attack: 0.006, pan });
+    tone(ctx, time + 0.150, 659 * pitch, 0.170, 0.035 * volume, { wave: 'triangle', attack: 0.006, pan });
+  }
+
+  function scheduleBonus(ctx, time, volume, pitch, pan) {
+    tone(ctx, time, 523 * pitch, 0.080, 0.029 * volume, { wave: 'sine', attack: 0.005, pan });
+    tone(ctx, time + 0.075, 784 * pitch, 0.130, 0.036 * volume, { wave: 'sine', attack: 0.005, pan });
+    tone(ctx, time + 0.150, 1046 * pitch, 0.200, 0.040 * volume, { wave: 'triangle', attack: 0.006, pan });
+  }
+
   function scheduleRare(ctx, time, volume, pitch, pan) {
     const notes = [659.25, 783.99, 1046.5, 1318.5];
     notes.forEach((note, index) => {
@@ -399,6 +417,9 @@
       case 'upgrade': scheduleUpgrade(ctx, time, volume, pitch, pan); break;
       case 'win': scheduleWin(ctx, time, volume, pitch, pan); break;
       case 'drop': scheduleDrop(ctx, time, volume, pitch, pan); break;
+      case 'sell': scheduleSell(ctx, time, volume, pitch, pan); break;
+      case 'profile': scheduleProfile(ctx, time, volume, pitch, pan); break;
+      case 'bonus': scheduleBonus(ctx, time, volume, pitch, pan); break;
       case 'rare': scheduleRare(ctx, time, volume, pitch, pan); break;
       case 'contract': scheduleContract(ctx, time, volume, pitch, pan); break;
       case 'fail': scheduleFail(ctx, time, volume, pitch, pan); break;
