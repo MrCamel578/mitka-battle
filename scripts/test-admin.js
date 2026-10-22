@@ -18,7 +18,7 @@ function profile(bal, inv, fav = []) {
 function user(id, username, role, bal, inv, banned = false, lastSeen = null) {
   return {
     id: String(id), username, username_key: username.toLowerCase(), role, banned, ban_reason: null,
-    profile_json: profile(bal, inv), last_seen: lastSeen
+    profile_json: profile(bal, inv), last_seen: lastSeen, created_at: '2026-01-01T00:00:00.000Z'
   };
 }
 function result(rows = []) { return { rows, rowCount: rows.length }; }
@@ -27,7 +27,9 @@ function nonAdminById(id) {
   return row && row.role !== 'admin' ? row : null;
 }
 function searchUsers(sql, args) {
-  const all = [...db.users.values()].filter(row => row.role !== 'admin');
+  let all = [...db.users.values()].filter(row => row.role !== 'admin');
+  if (sql.includes('AND banned=TRUE')) all = all.filter(row => row.banned);
+  if (sql.includes("AND banned=FALSE AND last_seen > NOW() - INTERVAL '90 seconds'")) all = all.filter(row => !row.banned && isRecent(row.last_seen));
   if (!sql.includes('ILIKE')) return all;
   const term = String(args[0]).replace(/^%/, '').replace(/%$/, '').toLowerCase();
   return all.filter(row => row.username.toLowerCase().includes(term) ||
@@ -57,9 +59,9 @@ const pool = {
         last_seen: row.last_seen, online: isRecent(row.last_seen)
       })));
     }
-    if (text.startsWith('SELECT id, username, profile_json, banned FROM app_users')) {
+    if (text.startsWith('SELECT id, username, profile_json, banned, ban_reason, last_seen, created_at,')) {
       const row = nonAdminById(args[0]);
-      return result(row ? [{ id: row.id, username: row.username, profile_json: row.profile_json, banned: row.banned }] : []);
+      return result(row ? [{ id: row.id, username: row.username, profile_json: row.profile_json, banned: row.banned, ban_reason: row.ban_reason, last_seen: row.last_seen, created_at: row.created_at, online: isRecent(row.last_seen) }] : []);
     }
     if (text.startsWith('SELECT id,username,profile_json,role,banned,ban_reason FROM app_users')) {
       const row = db.users.get(Number(args[0]));
@@ -143,6 +145,7 @@ async function invoke(method, routePath, { params = {}, body = {}, query = {}, s
   const res = {
     statusCode: 200, body: undefined,
     status(code) { this.statusCode = code; return this; },
+    set() { return this; },
     json(bodyValue) { this.body = bodyValue; return this; }
   };
   async function run(index) {
@@ -197,10 +200,24 @@ function freshData() {
   assert.equal(response.body.users[0].id, 2);
   response = await invoke('GET', '/api/admin/users', { query: { search: '5', offset: '0', limit: '50' } });
   assert.equal(response.body.total, 0, 'numeric search does not expose administrator targets');
+  response = await invoke('GET', '/api/admin/users', { query: { status: 'online', offset: '0', limit: '50' } });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(plain(response.body.users.map(entry => entry.username)), ['Alice'], 'online filter excludes banned and inactive accounts');
+  response = await invoke('GET', '/api/admin/users', { query: { status: 'banned', offset: '0', limit: '50' } });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(plain(response.body.users.map(entry => entry.username)), ['Banned Bob'], 'banned filter finds blocked accounts');
+  response = await invoke('GET', '/api/admin/users', { query: { status: 'anything', offset: '0', limit: '50' } });
+  assert.equal(response.statusCode, 400, 'unknown status filters are rejected before querying PostgreSQL');
 
   response = await invoke('GET', '/api/admin/users/:id/inventory', { params: { id: '2' } });
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(plain(response.body.player), { id: 2, username: 'Alice', bal: 120, banned: false });
+  assert.equal(response.body.player.id, 2);
+  assert.equal(response.body.player.username, 'Alice');
+  assert.equal(response.body.player.bal, 120);
+  assert.equal(response.body.player.banned, false);
+  assert.equal(response.body.player.online, true);
+  assert.equal(response.body.player.stats.opened, 0);
+  assert.equal(response.body.player.stats.lockedItems, 1, 'detailed view includes non-mutating account stats');
   assert.deepEqual(plain(response.body.items.map(item => item.index)), [0, 1, 2]);
   const expectedVersion = crypto.createHash('sha256').update(JSON.stringify(db.users.get(2).profile_json.inv)).digest('hex');
   assert.equal(response.body.inventoryVersion, expectedVersion);
@@ -269,7 +286,22 @@ function freshData() {
 
   const catalog = require('../catalog.json');
   const expensiveCase = catalog.CASES.find(c => c.id === 37);
-  const distribution = require('../lib/case-balance').getCaseDistribution(expensiveCase);
+  const { getCaseDistribution, GROUPS, POLICY } = require('../lib/case-balance');
+  const distribution = getCaseDistribution(expensiveCase);
+  response = await invoke('GET', '/api/case-odds/:id', { params: { id: '37' }, session: {} });
+  assert.equal(response.statusCode, 200, 'published case odds are available without a logged-in account');
+  assert.equal(response.body.oddsSameForEveryPlayer, true);
+  assert.equal(response.body.independentDraws, true);
+  assert.equal(response.body.perUserOddsAdjustment, false);
+  assert.equal(response.body.items.length, expensiveCase.pool.length);
+  assert.equal(response.body.groups.length, GROUPS.length);
+  assert.equal(response.body.targetReturnRateCap, POLICY.targetReturnRateCap);
+  assert.equal(response.body.expectedReturnRate, distribution.returnRate);
+  response.body.items.forEach((item, index) => assert.equal(item.probability, distribution.probabilities[index]));
+  response = await invoke('GET', '/api/case-odds/:id', { params: { id: 'missing' }, session: {} });
+  assert.equal(response.statusCode, 400, 'malformed case IDs are rejected');
+  response = await invoke('GET', '/api/case-odds/:id', { params: { id: '999999' }, session: {} });
+  assert.equal(response.statusCode, 404, 'unknown cases return 404');
   const rolls = [0.01, 0.15, 0.3, 0.5, 0.65, 0.8, 0.91, 0.96, 0.99, 0.999];
   const expected = rolls.map(roll => distribution.items[distribution.cumulativeWeights.findIndex(total => roll < total)]);
   const originalRandom = Math.random;
