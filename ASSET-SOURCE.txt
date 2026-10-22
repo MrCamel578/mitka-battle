@@ -1,0 +1,3 @@
+131 real CS2 inventory-image thumbnails (256×256 PNG), served locally by this project. Filenames 000.png through 130.png map to the corresponding index in ../catalog.json -> SK.
+The matching of localized names, CS2 rarity metadata and Steam Economy image IDs was checked against https://github.com/ByMykel/CSGO-API (metadata/API repository is MIT licensed; see its LICENSE). PNG thumbnails were downloaded directly from Steam Community Economy CDN, not from ByMykel image data.
+Steam image host: https://community.akamai.steamstatic.com/economy/image/. CS2 item art remains subject to Valve/Steam rights; this project is not endorsed by Valve.
