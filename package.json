@@ -1,12 +1,12 @@
 {
   "name": "mitka-battle-server",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "private": true,
   "description": "Митька-Battle: сайт с серверными аккаунтами и PostgreSQL/Supabase",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --check server.js && node scripts/validate-catalog.js"
+    "test": "node scripts/check-syntax.js && node scripts/validate-catalog.js && node scripts/test-case-balance.js && node scripts/test-admin.js && node scripts/test-admin-ui.js"
   },
   "engines": {
     "node": ">=20"

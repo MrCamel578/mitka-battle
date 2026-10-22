@@ -1,0 +1,25 @@
+.admin-layout{grid-template-columns:minmax(0,1.15fr) minmax(0,1fr)}
+.admin-layout>.panel{min-width:0}
+.admin-search{margin:12px 0}
+.admin-search .field{min-width:0;flex:1}
+.admin-section-title{margin-top:20px}
+.admin-player-label{margin-top:12px;overflow-wrap:anywhere}
+.admin-pagination{margin-top:12px;align-items:center;justify-content:space-between}
+.admin-table-scroll{overflow:auto;max-height:520px}
+.admin-table{width:100%;border-collapse:collapse;text-align:left;font-size:12px}
+.admin-table th{color:var(--muted);font-size:10px;padding:9px 7px;white-space:nowrap}
+.admin-table td{border-top:1px solid var(--line);padding:10px 7px;vertical-align:middle;overflow-wrap:anywhere}
+.admin-table td small{display:block;color:var(--muted);margin-top:4px;max-width:360px;overflow-wrap:anywhere}
+.admin-table td:nth-child(2){white-space:nowrap}
+.admin-active-row{background:#ff743814}
+.admin-inventory-head{margin:0;align-items:center}
+.admin-inventory{max-height:640px;overflow:auto;padding:3px;margin-top:12px}
+.admin-skin{position:relative;display:block;cursor:pointer;border:2px solid transparent;border-radius:15px;padding:3px;min-width:0}
+.admin-skin-selected{border-color:var(--orange);background:#ff743818}
+.admin-skin-checkbox{position:absolute;left:12px;top:13px;z-index:2;width:19px;height:19px;accent-color:var(--orange);cursor:pointer}
+.admin-skin-choice{display:block;padding:3px 5px 8px 30px;color:var(--muted);font-size:10px;min-height:25px}
+.admin-skin .skin{height:calc(100% - 25px)}
+/* Независимый слой уведомлений: ни кнопка, ни раскрытый чат их не закрывают. */
+#notice.notice{top:max(16px,env(safe-area-inset-top));bottom:auto;left:50%;right:auto;transform:translateX(-50%);z-index:10000;width:max-content;max-width:min(560px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto;overflow-wrap:anywhere;background:#222a3b;box-shadow:0 12px 45px #000a;color:var(--text)}
+@media(max-width:900px){.admin-layout{grid-template-columns:1fr}}
+@media(max-width:560px){.admin-inventory-head .toolbar{gap:6px}.admin-inventory-head button{flex:1;font-size:11px;padding:8px}.admin-table td{padding:8px 4px;font-size:11px}.admin-layout .toolbar .field{flex-basis:100%}#notice.notice{max-width:calc(100vw - 24px);top:max(12px,env(safe-area-inset-top));padding:12px 14px}.admin-inventory{max-height:65vh}}

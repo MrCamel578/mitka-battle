@@ -1,5 +1,6 @@
 'use strict';
 const path = require('node:path');
+const crypto = require('node:crypto');
 const express = require('express');
 const session = require('express-session');
 const pgSession = require('connect-pg-simple')(session);
@@ -8,8 +9,8 @@ const bcrypt = require('bcryptjs');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit').rateLimit;
 const CATALOG = require('./catalog.json');
-// Более щедрые веса редкости: common 50%, blue 27%, purple 13%, pink 6%, red 3%, gold 1% суммарно по редкости в каждом кейсе.
-const TIER_WEIGHT = { c: 50, b: 27, p: 13, k: 6, g: 3, y: 1 };
+// Одинаковые независимые шансы для одиночного и массового открытия.
+const { pickCaseItem } = require('./lib/case-balance');
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -109,8 +110,23 @@ async function requireAdmin(req, res, next) {
   } catch (e) { console.error('admin auth error', e); res.status(500).json({ error: 'Ошибка проверки прав' }); }
 }
 async function audit(req, action, target, details={}) {
-  await pool.query('INSERT INTO admin_audit (admin_id, admin_name, action, target, details) VALUES ($1,$2,$3,$4,$5::jsonb)',
+  return auditWithClient(pool, req, action, target, details);
+}
+async function auditWithClient(client, req, action, target, details={}) {
+  await client.query('INSERT INTO admin_audit (admin_id, admin_name, action, target, details) VALUES ($1,$2,$3,$4,$5::jsonb)',
     [req.session.userId, req.session.username || 'admin', action, String(target || ''), JSON.stringify(details)]);
+}
+function parseAdminUserId(value) {
+  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) return null;
+  const id = Number(value);
+  return Number.isSafeInteger(id) ? id : null;
+}
+function inventoryVersion(inv) {
+  const sanitizedInventory = sanitizeProfile({ inv }).inv;
+  return crypto.createHash('sha256').update(JSON.stringify(sanitizedInventory)).digest('hex');
+}
+function adminError(message, status) {
+  return Object.assign(new Error(message), { status });
 }
 app.disable('x-powered-by');
 if (isProd) app.set('trust proxy', 1);
@@ -173,26 +189,21 @@ app.get('/api/me', async (req, res) => {
   } catch (e) { console.error('me error', e); res.status(500).json({ error: 'Не удалось загрузить аккаунт' }); }
 });
 app.put('/api/state', requireAuth, async (req, res) => {
+  const cx = await pool.connect();
   try {
-    const result = await pool.query('SELECT id, username, role, banned, ban_reason, profile_json FROM app_users WHERE id = $1', [req.session.userId]);
-    const row = result.rows[0];
-    if (!row) return res.status(401).json({ error: 'Аккаунт не найден' });
-    if (row.banned) return res.status(403).json({ error: `Вы забанены${row.ban_reason ? ': ' + row.ban_reason : ''}` });
-    const existing = sanitizeProfile(row.profile_json);
+    await cx.query('BEGIN');
+    const { row, profile: existing } = await loadLockedUser(cx, req.session.userId);
+    // The client may persist favourites only. Balance and inventory always remain authoritative on the server.
     const profile = { ...existing, fav: sanitizeProfile({ ...existing, fav: req.body?.fav }).fav, name: row.username };
-    await pool.query('UPDATE app_users SET profile_json = $1::jsonb, updated_at = NOW() WHERE id = $2', [JSON.stringify(profile), row.id]);
+    await cx.query('UPDATE app_users SET profile_json = $1::jsonb, updated_at = NOW() WHERE id = $2', [JSON.stringify(profile), row.id]);
+    await cx.query('COMMIT');
     res.json({ ok: true, user: publicUser({ ...row, profile_json: profile }) });
-  } catch (e) { console.error('state error', e); res.status(500).json({ error: 'Не удалось сохранить настройки' }); }
+  } catch (e) {
+    await cx.query('ROLLBACK');
+    console.error('state error', e);
+    res.status(e.status || 500).json({ error: e.message || 'Не удалось сохранить настройки' });
+  } finally { cx.release(); }
 });
-function pickCaseItem(c) {
-  const counts = {};
-  for (const item of c.pool) counts[item.r] = (counts[item.r] || 0) + 1;
-  let total = 0;
-  const weights = c.pool.map(item => { const w = (TIER_WEIGHT[item.r] || 1) / counts[item.r]; total += w; return w; });
-  let roll = Math.random() * total;
-  for (let i = 0; i < c.pool.length; i++) { roll -= weights[i]; if (roll <= 0) return c.pool[i]; }
-  return c.pool[c.pool.length - 1];
-}
 async function loadLockedUser(client, userId) {
   const r = await client.query('SELECT id,username,profile_json,role,banned,ban_reason FROM app_users WHERE id=$1 FOR UPDATE', [userId]);
   if (!r.rowCount) throw Object.assign(new Error('Аккаунт не найден'), { status: 401 });
@@ -236,6 +247,56 @@ app.post('/api/presence', requireAuth, async (req, res) => {
     res.json({ok:true});
   } catch(e) { console.error('presence error',e); res.status(500).json({error:'Не удалось обновить статус'}); }
 });
+app.get('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
+  const rawSearch = req.query?.search;
+  const rawOffset = req.query?.offset;
+  const rawLimit = req.query?.limit;
+  const search = rawSearch === undefined ? '' : (typeof rawSearch === 'string' ? rawSearch.trim() : null);
+  const offset = rawOffset === undefined ? 0 : (/^\d+$/.test(String(rawOffset)) ? Number(rawOffset) : NaN);
+  const limit = rawLimit === undefined ? 50 : (/^\d+$/.test(String(rawLimit)) ? Number(rawLimit) : NaN);
+  if (search === null || search.length > 80 || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
+    return res.status(400).json({ error: 'Некорректные параметры списка игроков' });
+  }
+  try {
+    const searchId = parseAdminUserId(search);
+    const where = !search ? "WHERE role <> 'admin'" : searchId
+      ? "WHERE role <> 'admin' AND (username ILIKE $1 OR id=$2)"
+      : "WHERE role <> 'admin' AND username ILIKE $1";
+    const searchArgs = search ? [`%${search}%`] : [];
+    if (searchId) searchArgs.push(searchId);
+    const count = await pool.query(`SELECT COUNT(*)::int AS total FROM app_users ${where}`, searchArgs);
+    const pageArgs = [...searchArgs, limit, offset];
+    const limitParam = `$${searchArgs.length + 1}`;
+    const offsetParam = `$${searchArgs.length + 2}`;
+    const result = await pool.query(`SELECT id, username, profile_json, banned, last_seen,
+      (last_seen > NOW() - INTERVAL '90 seconds') AS online
+      FROM app_users ${where} ORDER BY last_seen DESC NULLS LAST, id DESC LIMIT ${limitParam} OFFSET ${offsetParam}`, pageArgs);
+    const users = result.rows.map(row => {
+      const profile = sanitizeProfile(row.profile_json);
+      return {
+        id: Number(row.id), username: row.username, bal: profile.bal, items: profile.inv.length,
+        banned: Boolean(row.banned), lastSeen: row.last_seen || null, online: Boolean(row.online)
+      };
+    });
+    res.json({ users, total: Number(count.rows[0]?.total || 0), offset, limit });
+  } catch (e) { console.error('admin users error', e); res.status(500).json({ error: 'Не удалось загрузить список игроков' }); }
+});
+app.get('/api/admin/users/:id/inventory', requireAuth, requireAdmin, async (req, res) => {
+  const userId = parseAdminUserId(req.params.id);
+  if (!userId) return res.status(400).json({ error: 'Некорректный ID игрока' });
+  try {
+    const result = await pool.query("SELECT id, username, profile_json, banned FROM app_users WHERE id=$1 AND role <> 'admin'", [userId]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Игрок не найден' });
+    const row = result.rows[0];
+    const profile = sanitizeProfile(row.profile_json);
+    const items = profile.inv.map((item, index) => ({ index, n: item.n, p: item.p, r: item.r, locked: item.locked }));
+    res.json({
+      player: { id: Number(row.id), username: row.username, bal: profile.bal, banned: Boolean(row.banned) },
+      items,
+      inventoryVersion: inventoryVersion(profile.inv)
+    });
+  } catch (e) { console.error('admin inventory error', e); res.status(500).json({ error: 'Не удалось загрузить инвентарь игрока' }); }
+});
 app.get('/api/admin/online', requireAuth, requireAdmin, async (req,res) => {
   try {
     const r=await pool.query(`SELECT id,username,profile_json,banned,last_seen FROM app_users WHERE role <> 'admin' AND last_seen > NOW()-INTERVAL '90 seconds' ORDER BY last_seen DESC LIMIT 200`);
@@ -243,20 +304,94 @@ app.get('/api/admin/online', requireAuth, requireAdmin, async (req,res) => {
   } catch(e){console.error('online list error',e);res.status(500).json({error:'Не удалось загрузить список игроков'});}
 });
 app.get('/api/admin/audit', requireAuth, requireAdmin, async (_req,res) => {
-  try { const r=await pool.query('SELECT admin_name,action,target,created_at FROM admin_audit ORDER BY id DESC LIMIT 100'); res.json({logs:r.rows.map(x=>({admin:x.admin_name,action:x.action,target:x.target,createdAt:x.created_at}))}); }
+  try { const r=await pool.query('SELECT admin_name,action,target,details,created_at FROM admin_audit ORDER BY id DESC LIMIT 100'); res.json({logs:r.rows.map(x=>({admin:x.admin_name,action:x.action,target:x.target,details:x.details||{},createdAt:x.created_at}))}); }
   catch(e){console.error('audit read error',e);res.status(500).json({error:'Не удалось загрузить журнал'});}
 });
 app.post('/api/admin/users/:id/money', requireAuth, requireAdmin, async (req,res) => {
-  const amount=Number(req.body?.amount); if(!Number.isFinite(amount)||amount<=0||amount>1e9)return res.status(400).json({error:'Сумма должна быть от 0 до 1 000 000 000'});
-  const cx=await pool.connect();try{await cx.query('BEGIN');const r=await cx.query("SELECT id,username,profile_json FROM app_users WHERE id=$1 AND role <> 'admin' FOR UPDATE",[req.params.id]);if(!r.rowCount){await cx.query('ROLLBACK');return res.status(404).json({error:'Игрок не найден'});}const p=sanitizeProfile(r.rows[0].profile_json);p.bal=Math.min(1e12,p.bal+amount);await cx.query('UPDATE app_users SET profile_json=$1::jsonb,updated_at=NOW() WHERE id=$2',[JSON.stringify(p),r.rows[0].id]);await cx.query('INSERT INTO admin_audit(admin_id,admin_name,action,target,details) VALUES($1,$2,$3,$4,$5::jsonb)',[req.session.userId,req.session.username||'admin','Выдача денег',r.rows[0].username,JSON.stringify({amount})]);await cx.query('COMMIT');res.json({ok:true,balance:p.bal});}catch(e){await cx.query('ROLLBACK');console.error('grant money error',e);res.status(500).json({error:'Не удалось выдать деньги'});}finally{cx.release();}
+  const userId = parseAdminUserId(req.params.id);
+  const amount = Number(req.body?.amount);
+  const mode = req.body?.mode === undefined ? 'add' : req.body.mode;
+  if (!userId) return res.status(400).json({ error: 'Некорректный ID игрока' });
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 1e9 || !['add', 'remove'].includes(mode)) return res.status(400).json({ error: 'Сумма должна быть больше 0 и не превышать 1 000 000 000; mode: add или remove' });
+  const cx=await pool.connect();
+  try {
+    await cx.query('BEGIN');
+    const r=await cx.query("SELECT id,username,profile_json FROM app_users WHERE id=$1 AND role <> 'admin' FOR UPDATE",[userId]);
+    if(!r.rowCount) throw adminError('Игрок не найден', 404);
+    const row = r.rows[0];
+    const p=sanitizeProfile(row.profile_json);
+    if (mode === 'remove' && p.bal < amount) throw adminError('Недостаточно средств на балансе игрока', 400);
+    const actualAmount = mode === 'add' ? Math.min(amount, Math.max(0, 1e12 - p.bal)) : amount;
+    if (actualAmount <= 0) throw adminError('Баланс игрока уже достиг лимита', 400);
+    p.bal = mode === 'add' ? p.bal + actualAmount : p.bal - actualAmount;
+    await cx.query('UPDATE app_users SET profile_json=$1::jsonb,updated_at=NOW() WHERE id=$2',[JSON.stringify(p),row.id]);
+    await auditWithClient(cx, req, mode === 'add' ? 'Выдача денег' : 'Списание денег', row.username, { mode, amount: actualAmount, requestedAmount: amount, balance: p.bal });
+    await cx.query('COMMIT');
+    res.json({ok:true,balance:p.bal,amount:actualAmount});
+  }catch(e){await cx.query('ROLLBACK');if(!e.status)console.error('money mutation error',e);res.status(e.status||500).json({error:e.message||'Не удалось изменить баланс'});}finally{cx.release();}
 });
 app.post('/api/admin/users/:id/skin', requireAuth, requireAdmin, async (req,res) => {
-  const name=typeof req.body?.name==='string'?req.body.name.trim().slice(0,180):'';const price=Number(req.body?.price);if(!name||!Number.isFinite(price)||price<0||price>1e12)return res.status(400).json({error:'Укажите название и корректную стоимость'});
-  try{const r=await pool.query("SELECT id,username,profile_json FROM app_users WHERE id=$1 AND role <> 'admin'",[req.params.id]);if(!r.rowCount)return res.status(404).json({error:'Игрок не найден'});const p=sanitizeProfile(r.rows[0].profile_json);const item={n:name,p:price,r:price>=100000?'y':price>=10000?'g':price>=1000?'p':price>=100?'b':'c'};p.inv.push(item);await pool.query('UPDATE app_users SET profile_json=$1::jsonb,updated_at=NOW() WHERE id=$2',[JSON.stringify(p),r.rows[0].id]);await pool.query('INSERT INTO admin_audit(admin_id,admin_name,action,target,details) VALUES($1,$2,$3,$4,$5::jsonb)',[req.session.userId,req.session.username||'admin','Выдача скина',r.rows[0].username,JSON.stringify(item)]);res.json({ok:true});}catch(e){console.error('grant skin error',e);res.status(500).json({error:'Не удалось выдать скин'});}
+  const userId = parseAdminUserId(req.params.id);
+  const name=typeof req.body?.name==='string'?req.body.name.trim().slice(0,180):'';
+  const price=Number(req.body?.price);
+  if (!userId) return res.status(400).json({ error: 'Некорректный ID игрока' });
+  if(!name||!Number.isFinite(price)||price<0||price>1e12)return res.status(400).json({error:'Укажите название и корректную стоимость'});
+  const cx=await pool.connect();
+  try {
+    await cx.query('BEGIN');
+    const r=await cx.query("SELECT id,username,profile_json FROM app_users WHERE id=$1 AND role <> 'admin' FOR UPDATE",[userId]);
+    if(!r.rowCount) throw adminError('Игрок не найден', 404);
+    const row = r.rows[0];
+    const p=sanitizeProfile(row.profile_json);
+    if (p.inv.length >= 5000) throw adminError('Лимит инвентаря игрока: 5000 предметов', 400);
+    const item={n:name,p:price,r:price>=100000?'y':price>=10000?'g':price>=1000?'p':price>=100?'b':'c',locked:false};
+    p.inv.push(item);
+    await cx.query('UPDATE app_users SET profile_json=$1::jsonb,updated_at=NOW() WHERE id=$2',[JSON.stringify(p),row.id]);
+    await auditWithClient(cx, req, 'Выдача скина', row.username, item);
+    await cx.query('COMMIT');
+    res.json({ok:true});
+  }catch(e){await cx.query('ROLLBACK');if(!e.status)console.error('grant skin error',e);res.status(e.status||500).json({error:e.message||'Не удалось выдать скин'});}finally{cx.release();}
+});
+app.post('/api/admin/users/:id/skins/remove', requireAuth, requireAdmin, async (req,res) => {
+  const userId = parseAdminUserId(req.params.id);
+  const indices = Array.isArray(req.body?.indices) ? req.body.indices : [];
+  const expectedVersion = req.body?.inventoryVersion;
+  if (!userId) return res.status(400).json({ error: 'Некорректный ID игрока' });
+  if (!indices.length || indices.length > 5000 || indices.some(index => !Number.isInteger(index) || index < 0) || new Set(indices).size !== indices.length || typeof expectedVersion !== 'string' || !/^[a-f0-9]{64}$/.test(expectedVersion)) {
+    return res.status(400).json({ error: 'Укажите уникальные индексы предметов и актуальную версию инвентаря' });
+  }
+  const cx=await pool.connect();
+  try {
+    await cx.query('BEGIN');
+    const r=await cx.query("SELECT id,username,profile_json FROM app_users WHERE id=$1 AND role <> 'admin' FOR UPDATE",[userId]);
+    if(!r.rowCount) throw adminError('Игрок не найден', 404);
+    const row = r.rows[0];
+    const p = sanitizeProfile(row.profile_json);
+    if (inventoryVersion(p.inv) !== expectedVersion) throw adminError('Инвентарь изменился. Обновите страницу', 409);
+    if (indices.some(index => index >= p.inv.length)) throw adminError('Некорректный индекс предмета', 400);
+    const removed = indices.map(index => ({ ...p.inv[index] }));
+    for (const index of [...indices].sort((a, b) => b - a)) p.inv.splice(index, 1);
+    await cx.query('UPDATE app_users SET profile_json=$1::jsonb,updated_at=NOW() WHERE id=$2',[JSON.stringify(p),row.id]);
+    await auditWithClient(cx, req, 'Изъятие скинов', row.username, { indices, removed, inventoryVersion: expectedVersion });
+    await cx.query('COMMIT');
+    res.json({ok:true,removed,balance:p.bal,items:p.inv.length});
+  }catch(e){await cx.query('ROLLBACK');if(!e.status)console.error('remove skins error',e);res.status(e.status||500).json({error:e.message||'Не удалось изъять скины'});}finally{cx.release();}
 });
 app.post('/api/admin/users/:id/ban', requireAuth, requireAdmin, async (req,res) => {
+  const userId = parseAdminUserId(req.params.id);
   const banned=Boolean(req.body?.banned);const reason=typeof req.body?.reason==='string'?req.body.reason.trim().slice(0,500):'';
-  try{const r=await pool.query("UPDATE app_users SET banned=$1,ban_reason=$2,updated_at=NOW() WHERE id=$3 AND role <> 'admin' RETURNING username",[banned,banned?reason:null,req.params.id]);if(!r.rowCount)return res.status(404).json({error:'Игрок не найден'});await pool.query('INSERT INTO admin_audit(admin_id,admin_name,action,target,details) VALUES($1,$2,$3,$4,$5::jsonb)',[req.session.userId,req.session.username||'admin',banned?'Бан':'Разбан',r.rows[0].username,JSON.stringify({reason})]);res.json({ok:true});}catch(e){console.error('ban error',e);res.status(500).json({error:'Не удалось изменить статус бана'});}
+  if (!userId) return res.status(400).json({ error: 'Некорректный ID игрока' });
+  const cx=await pool.connect();
+  try {
+    await cx.query('BEGIN');
+    const r=await cx.query("SELECT id,username FROM app_users WHERE id=$1 AND role <> 'admin' FOR UPDATE",[userId]);
+    if(!r.rowCount) throw adminError('Игрок не найден', 404);
+    const row = r.rows[0];
+    await cx.query('UPDATE app_users SET banned=$1,ban_reason=$2,updated_at=NOW() WHERE id=$3',[banned,banned?reason:null,row.id]);
+    await auditWithClient(cx, req, banned?'Бан':'Разбан', row.username, { reason });
+    await cx.query('COMMIT');
+    res.json({ok:true});
+  }catch(e){await cx.query('ROLLBACK');if(!e.status)console.error('ban error',e);res.status(e.status||500).json({error:e.message||'Не удалось изменить статус бана'});}finally{cx.release();}
 });
 app.post('/api/contracts', requireAuth, async (req,res) => {
   const indices=Array.isArray(req.body?.indices)?req.body.indices:[];
