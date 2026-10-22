@@ -10,7 +10,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit').rateLimit;
 const CATALOG = require('./catalog.json');
 // Одинаковые независимые шансы для одиночного и массового открытия.
-const { pickCaseItem } = require('./lib/case-balance');
+const { pickCaseItem, getCaseDistribution, GROUPS, POLICY } = require('./lib/case-balance');
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -80,7 +80,7 @@ async function initDb() {
 }
 function sanitizeProfile(p) {
   const bal = Number(p?.bal), best = Number(p?.best), opened = Number(p?.opened), bonus = Number(p?.bonus);
-  const inv = Array.isArray(p?.inv) ? p.inv.slice(0, 5000).filter(x => x && typeof x.n === 'string' && x.n.length <= 180 && Number.isFinite(Number(x.p)) && Number(x.p) >= 0 && ['c','b','p','k','g','y'].includes(x.r)).map(x => ({ n: x.n.replace(/[<>]/g, '').slice(0, 180), p: Math.min(1e12, Number(x.p)), r: x.r, locked: Boolean(x.locked) })) : [];
+  const inv = Array.isArray(p?.inv) ? p.inv.slice(0, 5000).filter(x => x && typeof x.n === 'string' && x.n.length <= 180 && Number.isFinite(Number(x.p)) && Number(x.p) >= 0 && ['c','b','p','k','d','g','y','u'].includes(x.r)).map(x => ({ n: x.n.replace(/[<>]/g, '').slice(0, 180), p: Math.min(1e12, Number(x.p)), r: x.r, locked: Boolean(x.locked) })) : [];
   const fav = Array.isArray(p?.fav) ? [...new Set(p.fav.filter(x => Number.isInteger(x) || (typeof x === 'string' && x.length < 80)))].slice(0, 1000) : [];
   return {
     name: typeof p?.name === 'string' ? p.name.slice(0, 16) : 'Игрок',
@@ -215,6 +215,40 @@ async function persistProfile(client, row, profile) {
   await client.query('UPDATE app_users SET profile_json=$1::jsonb,updated_at=NOW(),last_seen=NOW() WHERE id=$2', [JSON.stringify(profile), row.id]);
   return publicUser({ ...row, profile_json: profile });
 }
+app.get('/api/case-odds/:id', (req, res) => {
+  const caseId = Number(req.params.id);
+  if (!Number.isSafeInteger(caseId)) return res.status(400).json({ error: 'Некорректный ID кейса' });
+  const definition = CATALOG.CASES.find(item => item.id === caseId);
+  if (!definition) return res.status(404).json({ error: 'Кейс не найден' });
+  const distribution = getCaseDistribution(definition);
+  res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+  res.json({
+    caseId,
+    caseName: definition.name,
+    price: definition.price,
+    policy: POLICY.name,
+    oddsSameForEveryPlayer: true,
+    independentDraws: true,
+    perUserOddsAdjustment: false,
+    expectedPayout: distribution.expectedValue,
+    expectedReturnRate: distribution.returnRate,
+    targetReturnRateCap: POLICY.targetReturnRateCap,
+    calibratedForPrice: distribution.calibratedForCap,
+    groups: GROUPS.map(group => ({
+      id: group.id,
+      label: group.label,
+      color: group.color,
+      probability: distribution.groupProbabilities[group.id] || 0
+    })),
+    items: distribution.items.map((item, index) => ({
+      index,
+      name: item.n,
+      rarity: item.r,
+      price: item.p,
+      probability: distribution.probabilities[index]
+    }))
+  });
+});
 app.post('/api/open-case', requireAuth, async (req,res) => {
   const caseId=Number(req.body?.caseId), count=Number(req.body?.count);
   if(!Number.isInteger(caseId)||!Number.isInteger(count)||count<1||count>10)return res.status(400).json({error:'Некорректное количество кейсов'});
@@ -251,10 +285,12 @@ app.get('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
   const rawSearch = req.query?.search;
   const rawOffset = req.query?.offset;
   const rawLimit = req.query?.limit;
+  const rawStatus = req.query?.status;
   const search = rawSearch === undefined ? '' : (typeof rawSearch === 'string' ? rawSearch.trim() : null);
   const offset = rawOffset === undefined ? 0 : (/^\d+$/.test(String(rawOffset)) ? Number(rawOffset) : NaN);
   const limit = rawLimit === undefined ? 50 : (/^\d+$/.test(String(rawLimit)) ? Number(rawLimit) : NaN);
-  if (search === null || search.length > 80 || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
+  const status = rawStatus === undefined ? 'all' : (typeof rawStatus === 'string' ? rawStatus : null);
+  if (search === null || search.length > 80 || !['all', 'online', 'banned'].includes(status) || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
     return res.status(400).json({ error: 'Некорректные параметры списка игроков' });
   }
   try {
@@ -262,15 +298,19 @@ app.get('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
     const where = !search ? "WHERE role <> 'admin'" : searchId
       ? "WHERE role <> 'admin' AND (username ILIKE $1 OR id=$2)"
       : "WHERE role <> 'admin' AND username ILIKE $1";
+    // Статус выбирается из закрытого списка выше, поэтому в SQL не попадает пользовательский текст.
+    const statusWhere = status === 'online' ? " AND banned=FALSE AND last_seen > NOW() - INTERVAL '90 seconds'"
+      : status === 'banned' ? ' AND banned=TRUE' : '';
+    const filteredWhere = `${where}${statusWhere}`;
     const searchArgs = search ? [`%${search}%`] : [];
     if (searchId) searchArgs.push(searchId);
-    const count = await pool.query(`SELECT COUNT(*)::int AS total FROM app_users ${where}`, searchArgs);
+    const count = await pool.query(`SELECT COUNT(*)::int AS total FROM app_users ${filteredWhere}`, searchArgs);
     const pageArgs = [...searchArgs, limit, offset];
     const limitParam = `$${searchArgs.length + 1}`;
     const offsetParam = `$${searchArgs.length + 2}`;
     const result = await pool.query(`SELECT id, username, profile_json, banned, last_seen,
       (last_seen > NOW() - INTERVAL '90 seconds') AS online
-      FROM app_users ${where} ORDER BY last_seen DESC NULLS LAST, id DESC LIMIT ${limitParam} OFFSET ${offsetParam}`, pageArgs);
+      FROM app_users ${filteredWhere} ORDER BY last_seen DESC NULLS LAST, id DESC LIMIT ${limitParam} OFFSET ${offsetParam}`, pageArgs);
     const users = result.rows.map(row => {
       const profile = sanitizeProfile(row.profile_json);
       return {
@@ -278,20 +318,27 @@ app.get('/api/admin/users', requireAuth, requireAdmin, async (req, res) => {
         banned: Boolean(row.banned), lastSeen: row.last_seen || null, online: Boolean(row.online)
       };
     });
-    res.json({ users, total: Number(count.rows[0]?.total || 0), offset, limit });
+    res.json({ users, total: Number(count.rows[0]?.total || 0), offset, limit, status });
   } catch (e) { console.error('admin users error', e); res.status(500).json({ error: 'Не удалось загрузить список игроков' }); }
 });
 app.get('/api/admin/users/:id/inventory', requireAuth, requireAdmin, async (req, res) => {
   const userId = parseAdminUserId(req.params.id);
   if (!userId) return res.status(400).json({ error: 'Некорректный ID игрока' });
   try {
-    const result = await pool.query("SELECT id, username, profile_json, banned FROM app_users WHERE id=$1 AND role <> 'admin'", [userId]);
+    const result = await pool.query(`SELECT id, username, profile_json, banned, ban_reason, last_seen, created_at,
+      (last_seen > NOW() - INTERVAL '90 seconds') AS online
+      FROM app_users WHERE id=$1 AND role <> 'admin'`, [userId]);
     if (!result.rowCount) return res.status(404).json({ error: 'Игрок не найден' });
     const row = result.rows[0];
     const profile = sanitizeProfile(row.profile_json);
     const items = profile.inv.map((item, index) => ({ index, n: item.n, p: item.p, r: item.r, locked: item.locked }));
     res.json({
-      player: { id: Number(row.id), username: row.username, bal: profile.bal, banned: Boolean(row.banned) },
+      player: {
+        id: Number(row.id), username: row.username, bal: profile.bal, banned: Boolean(row.banned),
+        banReason: row.ban_reason || null, lastSeen: row.last_seen || null, online: Boolean(row.online),
+        createdAt: row.created_at || null,
+        stats: { opened: profile.opened, best: profile.best, bonusAt: profile.bonus || null, lockedItems: items.filter(item => item.locked).length }
+      },
       items,
       inventoryVersion: inventoryVersion(profile.inv)
     });
@@ -344,7 +391,7 @@ app.post('/api/admin/users/:id/skin', requireAuth, requireAdmin, async (req,res)
     const row = r.rows[0];
     const p=sanitizeProfile(row.profile_json);
     if (p.inv.length >= 5000) throw adminError('Лимит инвентаря игрока: 5000 предметов', 400);
-    const item={n:name,p:price,r:price>=100000?'y':price>=10000?'g':price>=1000?'p':price>=100?'b':'c',locked:false};
+    const item={n:name,p:price,r:price>=100000?'y':price>=10000?'g':price>=1000?'d':price>=100?'k':'p',locked:false};
     p.inv.push(item);
     await cx.query('UPDATE app_users SET profile_json=$1::jsonb,updated_at=NOW() WHERE id=$2',[JSON.stringify(p),row.id]);
     await auditWithClient(cx, req, 'Выдача скина', row.username, item);
