@@ -1,0 +1,40 @@
+.admin-layout{grid-template-columns:minmax(0,1.15fr) minmax(0,1fr)}
+.admin-layout>.panel{min-width:0}
+.admin-search{margin:12px 0}
+.admin-search .field{min-width:0;flex:1}
+.admin-search .admin-status-filter{flex:0 1 170px}
+.admin-filter-hint{margin:-4px 0 12px}
+.admin-section-title{margin-top:20px}
+.admin-player-label{margin-top:12px;overflow-wrap:anywhere}
+.admin-player-details{margin-top:10px}
+.admin-detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:0}
+.admin-detail-grid>div{min-width:0;padding:9px 10px;border:1px solid var(--line);border-radius:10px;background:#10152180}
+.admin-detail-grid dt{color:var(--muted);font-size:10px;margin:0 0 3px}
+.admin-detail-grid dd{margin:0;font-size:12px;font-weight:700;overflow-wrap:anywhere}
+.admin-detail-grid .admin-detail-wide{grid-column:1/-1}
+.admin-ban-reason{border-color:#743342!important;background:#43232d66!important}
+.admin-status{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:999px;padding:2px 7px;color:var(--muted);font-size:10px;font-weight:800;line-height:1.35}
+.admin-status-online{color:var(--green);border-color:#2d775b;background:#183c3288}
+.admin-status-banned{color:#ff9aa6;border-color:#743342;background:#43232d88}
+.admin-pagination{margin-top:12px;align-items:center;justify-content:space-between}
+.admin-table-scroll{overflow:auto;max-height:520px}
+.admin-table{width:100%;border-collapse:collapse;text-align:left;font-size:12px}
+.admin-table th{color:var(--muted);font-size:10px;padding:9px 7px;white-space:nowrap}
+.admin-table td{border-top:1px solid var(--line);padding:10px 7px;vertical-align:middle;overflow-wrap:anywhere}
+.admin-table td small{display:block;color:var(--muted);margin-top:4px;max-width:360px;overflow-wrap:anywhere}
+.admin-table td:nth-child(2){white-space:nowrap}
+.admin-active-row{background:#ff743814}
+.admin-audit-head{margin:0 0 12px;align-items:center}
+.admin-audit-head h3{margin-bottom:3px}
+.admin-audit-head .field{min-width:min(280px,100%)}
+.admin-inventory-head{margin:0;align-items:center}
+.admin-inventory{max-height:640px;overflow:auto;padding:3px;margin-top:12px}
+.admin-skin{position:relative;display:block;cursor:pointer;border:2px solid transparent;border-radius:15px;padding:3px;min-width:0}
+.admin-skin-selected{border-color:var(--orange);background:#ff743818}
+.admin-skin-checkbox{position:absolute;left:12px;top:13px;z-index:2;width:19px;height:19px;accent-color:var(--orange);cursor:pointer}
+.admin-skin-choice{display:block;padding:3px 5px 8px 30px;color:var(--muted);font-size:10px;min-height:25px}
+.admin-skin .skin{height:calc(100% - 25px)}
+/* Независимый слой уведомлений: ни кнопка, ни раскрытый чат их не закрывают. */
+#notice.notice{top:max(16px,env(safe-area-inset-top));bottom:auto;left:50%;right:auto;transform:translateX(-50%);z-index:10000;width:max-content;max-width:min(560px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto;overflow-wrap:anywhere;background:#222a3b;box-shadow:0 12px 45px #000a;color:var(--text)}
+@media(max-width:900px){.admin-layout{grid-template-columns:1fr}}
+@media(max-width:560px){.admin-inventory-head .toolbar{gap:6px}.admin-inventory-head button{flex:1;font-size:11px;padding:8px}.admin-table td{padding:8px 4px;font-size:11px}.admin-layout .toolbar .field{flex-basis:100%}.admin-search .admin-status-filter{flex-basis:100%}.admin-detail-grid{grid-template-columns:1fr}.admin-detail-grid .admin-detail-wide{grid-column:auto}.admin-audit-head .field{min-width:0}#notice.notice{max-width:calc(100vw - 24px);top:max(12px,env(safe-area-inset-top));padding:12px 14px}.admin-inventory{max-height:65vh}}

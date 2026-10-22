@@ -1,0 +1,158 @@
+/* Visible case category controls; loaded independently from the base application CSS. */
+.case-categories {
+  position: relative;
+  overflow: hidden;
+  margin: 0 0 16px;
+  padding: 13px;
+  border: 1px solid color-mix(in srgb, var(--orange, #ff8746) 28%, var(--line, #394158));
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at 0 0, #ff87461f, transparent 42%),
+    linear-gradient(145deg, #202638e8, #171c2ae8);
+  box-shadow: 0 12px 28px #0609132b;
+}
+
+.case-categories::after {
+  position: absolute;
+  top: -30px;
+  right: -18px;
+  width: 92px;
+  height: 92px;
+  border: 1px solid #ffb16b24;
+  border-radius: 50%;
+  content: '';
+  pointer-events: none;
+}
+
+.case-categories__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.case-categories__label {
+  color: var(--text, #edf0f7);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.case-categories__total {
+  color: var(--muted, #9aa3b4);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.case-category-chips {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.case-category-chip {
+  display: inline-flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 7px 11px 7px 13px;
+  border: 1px solid #556078;
+  border-radius: 999px;
+  color: var(--text, #edf0f7);
+  background: #151a28cc;
+  box-shadow: inset 0 1px #ffffff0a;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1;
+  transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.case-category-chip:hover {
+  border-color: #ffb16b;
+  background: #2a2630;
+  transform: translateY(-1px);
+}
+
+.case-category-chip.is-active {
+  border-color: var(--orange, #ff8746);
+  color: #fff8f1;
+  background: linear-gradient(135deg, #ff8746, #e85d3a);
+  box-shadow: 0 7px 18px #e85d3a38, inset 0 1px #ffffff3d;
+}
+
+.case-category-chip:focus-visible {
+  outline: 2px solid #ffe0c7;
+  outline-offset: 3px;
+}
+
+.case-category-chip__count {
+  display: grid;
+  min-width: 20px;
+  min-height: 20px;
+  place-items: center;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: #c7cfdf;
+  background: #ffffff14;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 900;
+}
+
+.case-category-chip.is-active .case-category-chip__count {
+  color: #5e2414;
+  background: #fff4;
+}
+
+.case-category-hidden {
+  display: none !important;
+}
+
+.case-category-empty {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 560px) {
+  .case-categories {
+    margin-bottom: 12px;
+    padding: 11px;
+    border-radius: 14px;
+  }
+
+  .case-category-chips {
+    flex-wrap: nowrap;
+    margin: 0 -3px -4px;
+    padding: 0 3px 4px;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+  }
+
+  .case-category-chips::-webkit-scrollbar {
+    display: none;
+  }
+
+  .case-category-chip {
+    flex: 0 0 auto;
+    min-height: 40px;
+    padding-inline: 12px 10px;
+    white-space: nowrap;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .case-category-chip {
+    transition: none;
+  }
+
+  .case-category-chip:hover {
+    transform: none;
+  }
+}
