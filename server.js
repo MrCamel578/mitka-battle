@@ -49,6 +49,17 @@ async function initDb() {
     id BIGSERIAL PRIMARY KEY, admin_id BIGINT REFERENCES app_users(id), admin_name TEXT NOT NULL,
     action TEXT NOT NULL, target TEXT, details JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS chat_messages (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    sender_id BIGINT NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+    sender_name TEXT NOT NULL,
+    sender_role TEXT NOT NULL DEFAULT 'player',
+    body TEXT NOT NULL CHECK (char_length(body) BETWEEN 1 AND 1000),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`);
+  // The site owner account is the designated chat administrator.
+  await pool.query("UPDATE app_users SET role='admin' WHERE username_key='idi0t578'");
   // Promote the configured existing account without changing its password.
   // If it does not exist yet, create one only when both credentials are explicitly configured.
   if (process.env.ADMIN_USERNAME) {
@@ -287,6 +298,48 @@ app.post('/api/lock-skin', requireAuth, async (req,res) => {
     await cx.query('COMMIT');res.json({ok:true,user,index,locked});
   } catch(e) { await cx.query('ROLLBACK');res.status(e.status||500).json({error:e.message||'Не удалось изменить блокировку'}); }
   finally { cx.release(); }
+});
+app.get('/api/chat/messages', requireAuth, async (req, res) => {
+  try {
+    const me = await pool.query('SELECT id, username, role FROM app_users WHERE id=$1', [req.session.userId]);
+    if (!me.rowCount) return res.status(401).json({ error: 'Аккаунт не найден' });
+    const admin = me.rows[0].role === 'admin';
+    const requested = Number(req.query.userId);
+    const userId = admin ? requested : Number(req.session.userId);
+    if (!Number.isInteger(userId) || userId < 1) return res.status(400).json({ error: 'Не указан игрок для чата' });
+    if (!admin && userId !== Number(req.session.userId)) return res.status(403).json({ error: 'Нет доступа к этому чату' });
+    const result = await pool.query(`SELECT id, user_id AS "userId", sender_id AS "senderId", sender_name AS "senderName", sender_role AS "senderRole", body, created_at AS "createdAt"
+      FROM chat_messages WHERE user_id=$1 ORDER BY id DESC LIMIT 200`, [userId]);
+    res.json({ ok: true, admin, userId, messages: result.rows.reverse() });
+  } catch (e) { console.error('chat messages error', e); res.status(500).json({ error: 'Не удалось загрузить сообщения' }); }
+});
+app.get('/api/chat/conversations', requireAuth, requireAdmin, async (_req, res) => {
+  try {
+    const result = await pool.query(`SELECT u.id, u.username, MAX(m.created_at) AS "lastAt", COUNT(m.id)::int AS "messages"
+      FROM app_users u JOIN chat_messages m ON m.user_id=u.id WHERE u.role <> 'admin'
+      GROUP BY u.id, u.username ORDER BY "lastAt" DESC LIMIT 100`);
+    res.json({ ok: true, conversations: result.rows });
+  } catch (e) { console.error('chat conversations error', e); res.status(500).json({ error: 'Не удалось загрузить список чатов' }); }
+});
+app.post('/api/chat/messages', requireAuth, async (req, res) => {
+  const body = typeof req.body?.body === 'string' ? req.body.body.trim() : '';
+  if (!body || body.length > 1000) return res.status(400).json({ error: 'Сообщение должно содержать от 1 до 1000 символов' });
+  try {
+    const me = await pool.query('SELECT id, username, role FROM app_users WHERE id=$1', [req.session.userId]);
+    if (!me.rowCount) return res.status(401).json({ error: 'Аккаунт не найден' });
+    const admin = me.rows[0].role === 'admin';
+    const requested = Number(req.body?.userId);
+    const userId = admin ? requested : Number(req.session.userId);
+    if (!Number.isInteger(userId) || userId < 1) return res.status(400).json({ error: 'Не указан игрок для чата' });
+    if (!admin && userId !== Number(req.session.userId)) return res.status(403).json({ error: 'Нет доступа к этому чату' });
+    const target = await pool.query('SELECT id FROM app_users WHERE id=$1', [userId]);
+    if (!target.rowCount) return res.status(404).json({ error: 'Игрок не найден' });
+    const sender = me.rows[0];
+    const result = await pool.query(`INSERT INTO chat_messages (user_id, sender_id, sender_name, sender_role, body)
+      VALUES ($1,$2,$3,$4,$5) RETURNING id, user_id AS "userId", sender_id AS "senderId", sender_name AS "senderName", sender_role AS "senderRole", body, created_at AS "createdAt"`,
+      [userId, sender.id, sender.username, sender.role, body]);
+    res.status(201).json({ ok: true, message: result.rows[0] });
+  } catch (e) { console.error('chat send error', e); res.status(500).json({ error: 'Не удалось отправить сообщение' }); }
 });
 app.get('/api/leaderboard', async (_req, res) => {
   try {

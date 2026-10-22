@@ -11,7 +11,7 @@
     app.classList.add('page-enter');
     app.querySelectorAll('.hero,.panel,.case,.skin,.stat,.profile-stat').forEach((element, index) => {
       element.style.setProperty('--motion-delay', `${Math.min(index, 11) * 28}ms`);
-      element.classList.add('motion-in');
+      if (!element.closest('.upgrade-root,.contracts-root')) element.classList.add('motion-in');
     });
   }
   document.addEventListener('click', event => {

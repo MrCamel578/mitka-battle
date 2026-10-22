@@ -416,10 +416,13 @@
       case 'open': scheduleOpen(ctx, time, volume, pitch, pan); break;
       case 'upgrade': scheduleUpgrade(ctx, time, volume, pitch, pan); break;
       case 'win': scheduleWin(ctx, time, volume, pitch, pan); break;
+      case 'victory': scheduleRare(ctx, time, volume, pitch, pan); break;
       case 'drop': scheduleDrop(ctx, time, volume, pitch, pan); break;
       case 'sell': scheduleSell(ctx, time, volume, pitch, pan); break;
       case 'profile': scheduleProfile(ctx, time, volume, pitch, pan); break;
       case 'bonus': scheduleBonus(ctx, time, volume, pitch, pan); break;
+      case 'chat': scheduleSelect(ctx, time, volume, pitch, pan); break;
+      case 'message': scheduleClick(ctx, time, volume, pitch, pan); break;
       case 'rare': scheduleRare(ctx, time, volume, pitch, pan); break;
       case 'contract': scheduleContract(ctx, time, volume, pitch, pan); break;
       case 'fail': scheduleFail(ctx, time, volume, pitch, pan); break;

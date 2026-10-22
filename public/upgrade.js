@@ -515,7 +515,7 @@ async function doUpgrade() {
     selectedUpgrade.clear();
     upgradeTarget = null;
     upgradeView.targetInvalidated = false;
-    sound(response.win ? 'win' : 'fail');
+    sound(response.win ? 'victory' : 'fail');
     toast(response.win ? 'Апгрейд успешен!' : 'Апгрейд не удался — ставка сгорела.', response.win ? 'good' : 'error');
   } catch (error) {
     toast(error.message || 'Не удалось выполнить апгрейд', 'error');
